@@ -56,14 +56,13 @@ Deno.serve(async (req) => {
     const code = String(body.code ?? "");
     if (!/^\d{6}$/.test(code)) return json(req, { error: "invalid_code" }, 400);
     const { data: ch } = await db.from("otp_challenges")
-      .select("id, attempts, expires_at, verified_at").eq("id", String(body.challenge_id ?? "")).maybeSingle();
+      .select("id, attempts, expires_at, verified_at, code_hash").eq("id", String(body.challenge_id ?? "")).maybeSingle();
     if (!ch) return json(req, { error: "not_found" }, 404);
     if (ch.verified_at) return json(req, { verified: true });
     if (new Date(ch.expires_at).getTime() < Date.now()) return json(req, { error: "expired" }, 410);
     if (ch.attempts >= 5) return json(req, { error: "too_many_attempts" }, 429);
 
-    const ok = (await sha256Hex(`${ch.id}:${code}`)) ===
-      (await db.from("otp_challenges").select("code_hash").eq("id", ch.id).single()).data?.code_hash;
+    const ok = (await sha256Hex(`${ch.id}:${code}`)) === ch.code_hash;
     await db.from("otp_challenges").update({
       attempts: ch.attempts + 1, ...(ok ? { verified_at: new Date().toISOString() } : {}),
     }).eq("id", ch.id);
