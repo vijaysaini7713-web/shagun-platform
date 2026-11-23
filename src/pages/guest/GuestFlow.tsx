@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { QRCodeSVG } from "qrcode.react";
@@ -8,22 +8,33 @@ import { isValidIndianMobile, normalizeMobile, maskMobile } from "../../lib/phon
 import { QUICK_AMOUNTS } from "../../lib/money";
 import { isValidUtr, upiLink } from "../../lib/upi";
 import { RELATIONS, type ContributionType, type Payee, type PublicEvent, type Purpose, type Side, type SubmitResult } from "../../lib/types";
-import { Button, Card, ErrorNote, Field, Input, LanguageToggle, Spinner } from "../../components/ui";
+import { Spinner } from "../../components/ui";
 
-type Step = "welcome" | "side" | "relation" | "details" | "give" | "otp" | "pay" | "done";
-const PROGRESS: Partial<Record<Step, number>> = { side: 1, relation: 2, details: 3, give: 4, otp: 4 };
+/*
+ * Guest page — one scrolling form.
+ * Look: Jaipur pink-city plaster (gulabi), kumkum red for choices, marigold thread joining the four
+ * sections, and a jharokha (arched window) framing the couple's names. The arch is the one bold element;
+ * everything else stays quiet so elders can read and tap easily.
+ */
+
+type Screen = "form" | "otp" | "pay" | "done";
+type Need = "side" | "relation" | "relation_other" | "name" | "mobile" | "consent" | "type" | "lifafa_photo" | "gift_photo" | "amount";
 
 const FAKE_REASONS = new Set(["too_few_digits", "round_number", "repeating_pair", "repeating_half", "sequence", "long_run"]);
+const NEED_TO_SECTION: Record<Need, string> = {
+  side: "sec-side", relation: "sec-relation", relation_other: "sec-relation", name: "sec-details", mobile: "sec-details",
+  consent: "sec-details", type: "sec-give", lifafa_photo: "sec-give", gift_photo: "sec-give", amount: "sec-give",
+};
 
 export default function GuestFlow({ assisted = false }: { assisted?: boolean }) {
   const { code = "" } = useParams();
   const { t, i18n } = useTranslation();
   const [event, setEvent] = useState<PublicEvent | null | undefined>(undefined);
-  const [step, setStep] = useState<Step>("welcome");
+  const [screen, setScreen] = useState<Screen>("form");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [tried, setTried] = useState(false);
 
-  // form
   const [side, setSide] = useState<Side | null>(null);
   const [relation, setRelation] = useState<string | null>(null);
   const [relationOther, setRelationOther] = useState("");
@@ -41,7 +52,6 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
   const [giftDesc, setGiftDesc] = useState("");
   const [message, setMessage] = useState("");
 
-  // otp + result
   const [otpReason, setOtpReason] = useState<string | null>(null);
   const [challengeId, setChallengeId] = useState<string | null>(null);
   const [otpCode, setOtpCode] = useState("");
@@ -49,6 +59,7 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
   const [result, setResult] = useState<SubmitResult | null>(null);
   const [photoWarning, setPhotoWarning] = useState(false);
   const [utrDone, setUtrDone] = useState(false);
+  const topRef = useRef<HTMLDivElement>(null);
 
   const mobile = normalizeMobile(mobileRaw);
 
@@ -57,13 +68,26 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
   }, [code]);
 
   useEffect(() => {
-    if (event?.theme_color) document.documentElement.style.setProperty("--theme", event.theme_color);
-  }, [event]);
+    if (screen !== "form") topRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [screen]);
 
-  const errText = (e: unknown) => {
-    if (e instanceof ApiError) return t(`errors.${e.code}`, { defaultValue: t("common.error_generic") });
-    return t("common.error_generic");
-  };
+  const needs: Need[] = useMemo(() => {
+    const n: Need[] = [];
+    if (!side) n.push("side");
+    if (!relation) n.push("relation");
+    else if (relation === "other" && !relationOther.trim()) n.push("relation_other");
+    if (name.trim().length < 2) n.push("name");
+    if (!isValidIndianMobile(mobile)) n.push("mobile");
+    if (!consent) n.push("consent");
+    if (types.size === 0) n.push("type");
+    if (types.has("online") && !(Number(onlineAmount) >= 1)) n.push("amount");
+    if (types.has("lifafa") && !lifafaPhoto) n.push("lifafa_photo");
+    if (types.has("gift") && !giftPhoto) n.push("gift_photo");
+    return n;
+  }, [side, relation, relationOther, name, mobile, consent, types, onlineAmount, lifafaPhoto, giftPhoto]);
+
+  const errText = (e: unknown) =>
+    e instanceof ApiError ? t(`errors.${e.code}`, { defaultValue: t("common.error_generic") }) : t("common.error_generic");
 
   const toggleType = (ty: ContributionType) =>
     setTypes((prev) => {
@@ -73,15 +97,17 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
       return n;
     });
 
-  const detailsValid = name.trim().length >= 2 && isValidIndianMobile(mobile) && consent;
+  function onSubmitClick() {
+    setTried(true);
+    if (needs.length > 0) {
+      document.getElementById(NEED_TO_SECTION[needs[0]])?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    void submit();
+  }
 
   async function submit(otpChallenge?: string) {
     setErr(null);
-    if (types.size === 0) return setErr(t("errors.pick_type"));
-    if (types.has("lifafa") && !lifafaPhoto) return setErr(t("errors.photo_required"));
-    if (types.has("gift") && !giftPhoto) return setErr(t("errors.photo_required"));
-    if (types.has("online") && !(Number(onlineAmount) >= 1)) return setErr(t("errors.invalid_amount"));
-
     const items = [...types].map((ty) => ({
       type: ty,
       purpose,
@@ -95,22 +121,14 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
     setBusy(true);
     try {
       const res = await callFunction<SubmitResult>("guest-submit", {
-        event_code: code,
-        name,
-        mobile,
-        side,
+        event_code: code, name, mobile, side,
         relation: relation === "other" ? relationOther || "other" : relation,
         relation_other: relation === "other" ? relationOther : undefined,
-        city,
-        family_count: familyCount ? Number(familyCount) : undefined,
+        city, family_count: familyCount ? Number(familyCount) : undefined,
         language: i18n.language === "en" ? "en" : "hi",
-        consent,
-        items,
-        otp_challenge_id: otpChallenge,
-        assisted,
+        consent, items, otp_challenge_id: otpChallenge, assisted,
       });
 
-      // Upload photos (compressed, EXIF stripped)
       let photoFail = false;
       for (const up of res.uploads) {
         const c = res.contributions.find((x) => x.id === up.contribution_id);
@@ -126,10 +144,10 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
       try {
         sessionStorage.setItem(`shagun:${code}`, JSON.stringify({ secret: res.secret, contributions: res.contributions }));
       } catch {
-        /* ignore */
+        /* storage blocked */
       }
       setResult(res);
-      setStep(types.has("online") ? "pay" : "done");
+      setScreen(types.has("online") ? "pay" : "done");
     } catch (e) {
       if (e instanceof ApiError && e.body.otp_required) {
         const r = String(e.body.reason ?? "");
@@ -137,7 +155,7 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
         setOtpSent(false);
         setChallengeId(null);
         setOtpCode("");
-        setStep("otp");
+        setScreen("otp");
       } else setErr(errText(e));
     } finally {
       setBusy(false);
@@ -148,12 +166,10 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
     setErr(null);
     setBusy(true);
     try {
-      const r = await callFunction<{ challenge_id: string; dev_code?: string }>("guest-otp", {
-        action: "send", event_code: code, mobile,
-      });
+      const r = await callFunction<{ challenge_id: string; dev_code?: string }>("guest-otp", { action: "send", event_code: code, mobile });
       setChallengeId(r.challenge_id);
       setOtpSent(true);
-      if (r.dev_code) setOtpCode(r.dev_code); // only when OTP_DEV_ECHO=true on a dev project
+      if (r.dev_code) setOtpCode(r.dev_code);
     } catch (e) {
       setErr(errText(e));
     } finally {
@@ -176,7 +192,8 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
   }
 
   function resetForNext() {
-    setStep("side");
+    setScreen("form");
+    setTried(false);
     setSide(null);
     setRelation(null);
     setRelationOther("");
@@ -194,298 +211,324 @@ export default function GuestFlow({ assisted = false }: { assisted?: boolean }) 
     setMessage("");
     setResult(null);
     setUtrDone(false);
+    window.scrollTo({ top: 0 });
   }
 
   if (event === undefined) return <Spinner />;
   if (event === null)
-    return (
-      <Shell>
-        <Card><p className="text-center">{t("guest.not_found")}</p></Card>
-      </Shell>
-    );
-  if (!event.guest_form_open && !assisted)
-    return (
-      <Shell event={event}>
-        <Card><p className="text-center">{t("guest.closed")}</p></Card>
-      </Shell>
-    );
+    return <Page><Notice>{t("guest.not_found")}</Notice></Page>;
 
-  const progress = PROGRESS[step];
+  const dateText = new Date(event.event_date).toLocaleDateString(i18n.language === "hi" ? "hi-IN" : "en-IN", { dateStyle: "long" });
+  const welcome = (i18n.language === "hi" ? event.welcome_text_hi : event.welcome_text_en) || t("guest.welcome_sub");
+  const show = (n: Need) => tried && needs.includes(n);
 
   return (
-    <Shell event={event}>
+    <Page>
+      <div ref={topRef} />
+      <Jharokha
+        names={t("guest.weds", { bride: event.bride_name, groom: event.groom_name })}
+        sub={event.venue ? t("guest.date_venue", { date: dateText, venue: event.venue }) : dateText}
+        welcome={screen === "form" ? welcome : undefined}
+        verified={t("guest.verified")}
+      />
+
       {assisted && (
-        <p className="rounded-lg bg-amber-100 px-3 py-2 text-center text-sm font-semibold text-amber-900">
+        <p className="mx-auto mt-4 max-w-md rounded-lg bg-marigold-soft px-3 py-2 text-center text-sm font-semibold text-ink">
           {t("guest.assisted_banner")}
         </p>
       )}
-      {progress && (
-        <div>
-          <p className="mb-1 text-xs text-gray-600">{t("guest.step", { n: progress, total: 4 })}</p>
-          <div className="h-2 rounded-full bg-maroon-100">
-            <div className="h-2 rounded-full bg-maroon-700 transition-all" style={{ width: `${progress * 25}%` }} />
-          </div>
-        </div>
-      )}
 
-      {step === "welcome" && (
-        <Card className="space-y-4 text-center">
-          {event.couple_photo_url && (
-            <img src={event.couple_photo_url} alt="" className="mx-auto h-40 w-40 rounded-full object-cover" />
-          )}
-          <h1 className="font-display text-3xl text-maroon-800">
-            {t("guest.weds", { bride: event.bride_name, groom: event.groom_name })}
-          </h1>
-          <p className="text-gray-600">
-            {new Date(event.event_date).toLocaleDateString(i18n.language === "hi" ? "hi-IN" : "en-IN", { dateStyle: "long" })}
-            {event.venue ? ` · ${event.venue}` : ""}
-          </p>
-          <p className="text-gray-700">
-            {(i18n.language === "hi" ? event.welcome_text_hi : event.welcome_text_en) || t("guest.welcome_sub")}
-          </p>
-          <p className="inline-flex items-center gap-1 rounded-full bg-green-50 px-3 py-1 text-xs font-semibold text-green-800">
-            ✓ {t("guest.verified")}
-          </p>
-          <Button className="w-full" onClick={() => setStep("side")}>{t("guest.start")}</Button>
-        </Card>
-      )}
-
-      {step === "side" && (
-        <Card className="space-y-3">
-          <h2 className="text-xl font-bold">{t("guest.side_q")}</h2>
-          {(["bride", "groom", "both"] as Side[]).map((s) => (
-            <button
-              key={s}
-              onClick={() => { setSide(s); setStep("relation"); }}
-              className={`w-full rounded-xl border-2 p-4 text-left text-lg font-semibold ${side === s ? "border-maroon-700 bg-maroon-50" : "border-gray-200 bg-white"}`}
-            >
-              {t(`guest.side_${s}`)}
-            </button>
-          ))}
-          <Button variant="ghost" onClick={() => setStep("welcome")}>{t("common.back")}</Button>
-        </Card>
-      )}
-
-      {step === "relation" && (
-        <Card className="space-y-3">
-          <h2 className="text-xl font-bold">{t("guest.relation_q")}</h2>
-          <div className="flex flex-wrap gap-2">
-            {RELATIONS.map((r) => (
-              <button
-                key={r}
-                onClick={() => setRelation(r)}
-                className={`rounded-full border-2 px-4 py-2 font-semibold ${relation === r ? "border-maroon-700 bg-maroon-700 text-white" : "border-gray-200 bg-white"}`}
-              >
-                {t(`guest.relations.${r}`)}
-              </button>
-            ))}
-          </div>
-          {relation === "other" && (
-            <Input value={relationOther} maxLength={60} onChange={(e) => setRelationOther(e.target.value)} placeholder={t("guest.relation_other_ph")} />
-          )}
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={() => setStep("side")}>{t("common.back")}</Button>
-            <Button className="flex-1" disabled={!relation || (relation === "other" && !relationOther.trim())} onClick={() => setStep("details")}>
-              {t("common.next")}
-            </Button>
-          </div>
-        </Card>
-      )}
-
-      {step === "details" && (
-        <Card className="space-y-4">
-          <h2 className="text-xl font-bold">{t("guest.details_title")}</h2>
-          <Field label={`${t("guest.name")} *`}>
-            <Input value={name} maxLength={80} autoComplete="name" onChange={(e) => setName(e.target.value)} placeholder={t("guest.name_ph")} />
-          </Field>
-          <Field label={`${t("guest.mobile")} *`}>
-            <Input value={mobileRaw} inputMode="numeric" autoComplete="tel" maxLength={14} onChange={(e) => setMobileRaw(e.target.value)} placeholder={t("guest.mobile_ph")} />
-          </Field>
-          {mobileRaw && !isValidIndianMobile(mobile) && <ErrorNote>{t("errors.invalid_mobile")}</ErrorNote>}
-          <div className="grid grid-cols-2 gap-3">
-            <Field label={`${t("guest.city")} (${t("common.optional")})`}>
-              <Input value={city} maxLength={80} onChange={(e) => setCity(e.target.value)} />
-            </Field>
-            <Field label={`${t("guest.family_count")} (${t("common.optional")})`}>
-              <Input value={familyCount} inputMode="numeric" maxLength={2} onChange={(e) => setFamilyCount(e.target.value.replace(/\D/g, ""))} />
-            </Field>
-          </div>
-          <label className="flex items-start gap-3 text-sm">
-            <input type="checkbox" className="mt-1 h-5 w-5" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
-            <span>{t("guest.consent")}</span>
-          </label>
-          {!detailsValid && <p className="text-xs text-gray-500">{t("guest.both_required")}</p>}
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={() => setStep("relation")}>{t("common.back")}</Button>
-            <Button className="flex-1" disabled={!detailsValid} onClick={() => setStep("give")}>{t("common.next")}</Button>
-          </div>
-        </Card>
-      )}
-
-      {step === "give" && (
-        <Card className="space-y-5">
-          <div>
-            <h2 className="mb-2 text-lg font-bold">{t("guest.purpose_q")}</h2>
-            <div className="flex flex-wrap gap-2">
-              {(["shagun", "kanyadaan", "aashirwad_gift"] as Purpose[]).map((p) => (
-                <button key={p} onClick={() => setPurpose(p)}
-                  className={`rounded-full border-2 px-4 py-2 font-semibold ${purpose === p ? "border-maroon-700 bg-maroon-700 text-white" : "border-gray-200"}`}>
-                  {t(`guest.purposes.${p}`)}
-                </button>
+      {!event.guest_form_open && !assisted ? (
+        <Notice>{t("guest.closed")}</Notice>
+      ) : screen === "form" ? (
+        <div className="mx-auto mt-6 max-w-md px-4 pb-40">
+          <Section id="sec-side" n={1} title={t("guest.sec_side")} done={!!side}>
+            <div className="grid grid-cols-2 gap-2">
+              {(["bride", "groom"] as Side[]).map((s) => (
+                <Choice key={s} big selected={side === s} onClick={() => setSide(s)}>{t(`guest.side_${s}`)}</Choice>
               ))}
             </div>
-          </div>
+            <Choice selected={side === "both"} onClick={() => setSide("both")} className="mt-2 w-full">{t("guest.side_both")}</Choice>
+            {show("side") && <Hint>{t("guest.need.side")}</Hint>}
+          </Section>
 
-          <div className="space-y-2">
-            <h2 className="text-lg font-bold">{t("guest.how_q")}</h2>
-            {(["online", "lifafa", "gift"] as ContributionType[]).map((ty) => (
-              <div key={ty} className={`rounded-xl border-2 p-3 ${types.has(ty) ? "border-maroon-700 bg-maroon-50" : "border-gray-200"}`}>
-                <label className="flex cursor-pointer items-center gap-3">
-                  <input type="checkbox" className="h-5 w-5" checked={types.has(ty)} onChange={() => toggleType(ty)}
-                    disabled={ty === "online" && !event.has_upi && !event.has_bank} />
-                  <span>
-                    <span className="block font-semibold">{t(`guest.types.${ty}`)}</span>
-                    <span className="block text-sm text-gray-600">{t(`guest.types_desc.${ty}`)}</span>
-                  </span>
-                </label>
+          <Section id="sec-relation" n={2} title={t("guest.sec_relation")} done={!!relation && (relation !== "other" || !!relationOther.trim())}>
+            <div className="flex flex-wrap gap-2">
+              {RELATIONS.map((r) => (
+                <Choice key={r} selected={relation === r} onClick={() => setRelation(r)}>{t(`guest.relations.${r}`)}</Choice>
+              ))}
+            </div>
+            {relation === "other" && (
+              <TextInput className="mt-3" value={relationOther} maxLength={60} placeholder={t("guest.relation_other_ph")}
+                onChange={(e) => setRelationOther(e.target.value)} />
+            )}
+            {(show("relation") || show("relation_other")) && <Hint>{t(show("relation") ? "guest.need.relation" : "guest.need.relation_other")}</Hint>}
+          </Section>
 
-                {types.has(ty) && ty === "online" && (
-                  <div className="mt-3 space-y-2">
-                    <p className="text-sm font-semibold">{t("guest.online_amount")}</p>
-                    <div className="grid grid-cols-3 gap-2">
-                      {QUICK_AMOUNTS.map((a) => (
-                        <button key={a} onClick={() => setOnlineAmount(a)}
-                          className={`rounded-lg border-2 py-2 font-semibold ${onlineAmount === a ? "border-maroon-700 bg-maroon-700 text-white" : "border-gray-200 bg-white"}`}>
-                          ₹{a.toLocaleString("en-IN")}
-                        </button>
-                      ))}
-                    </div>
-                    <Input inputMode="numeric" placeholder={t("guest.custom_amount")} value={onlineAmount}
-                      onChange={(e) => setOnlineAmount(e.target.value ? Number(e.target.value.replace(/\D/g, "").slice(0, 7)) : "")} />
-                  </div>
-                )}
-
-                {types.has(ty) && ty === "lifafa" && (
-                  <div className="mt-3 space-y-2">
-                    <PhotoPicker label={t("guest.photo_of_lifafa")} file={lifafaPhoto} onChange={setLifafaPhoto} />
-                    <Field label={t("guest.amount_optional")} hint={t("guest.amount_optional_hint")}>
-                      <Input inputMode="numeric" value={lifafaAmount} onChange={(e) => setLifafaAmount(e.target.value.replace(/\D/g, "").slice(0, 7))} />
-                    </Field>
-                  </div>
-                )}
-
-                {types.has(ty) && ty === "gift" && (
-                  <div className="mt-3 space-y-2">
-                    <PhotoPicker label={t("guest.photo_of_gift")} file={giftPhoto} onChange={setGiftPhoto} />
-                    <Input value={giftDesc} maxLength={120} placeholder={t("guest.gift_desc_ph")} onChange={(e) => setGiftDesc(e.target.value)} />
-                  </div>
-                )}
+          <Section id="sec-details" n={3} title={t("guest.sec_details")} done={name.trim().length >= 2 && isValidIndianMobile(mobile) && consent}>
+            <Label text={`${t("guest.name")} *`}>
+              <TextInput value={name} maxLength={80} autoComplete="name" placeholder={t("guest.name_ph")} onChange={(e) => setName(e.target.value)} invalid={show("name")} />
+            </Label>
+            <Label text={`${t("guest.mobile")} *`}>
+              <div className={`flex items-center rounded-xl border-2 bg-white ${show("mobile") || (mobileRaw && !isValidIndianMobile(mobile)) ? "border-kumkum" : "border-gulabi-200 focus-within:border-kumkum"}`}>
+                <span className="pl-4 pr-2 text-lg text-ink/60">+91</span>
+                <input value={mobileRaw} inputMode="numeric" autoComplete="tel-national" maxLength={14} placeholder={t("guest.mobile_ph")}
+                  onChange={(e) => setMobileRaw(e.target.value)}
+                  className="min-h-[52px] w-full rounded-r-xl bg-transparent pr-4 text-lg tracking-wide text-ink outline-none" />
               </div>
-            ))}
+            </Label>
+            {(show("name") || show("mobile")) && <Hint>{t(show("name") ? "guest.need.name" : "guest.need.mobile")}</Hint>}
+            <div className="grid grid-cols-[1fr_7rem] items-end gap-3">
+              <Label text={t("guest.city")} optional={t("common.optional")}>
+                <TextInput value={city} maxLength={80} onChange={(e) => setCity(e.target.value)} />
+              </Label>
+              <Label text={t("guest.family_count")} optional={t("common.optional")}>
+                <TextInput value={familyCount} inputMode="numeric" maxLength={2} onChange={(e) => setFamilyCount(e.target.value.replace(/\D/g, ""))} />
+              </Label>
+            </div>
+            <label className={`mt-1 flex items-start gap-3 rounded-xl p-3 text-[15px] leading-snug text-ink ${show("consent") ? "bg-kumkum-soft" : "bg-white/70"}`}>
+              <input type="checkbox" className="mt-0.5 h-6 w-6 shrink-0 accent-[#8C1C2B]" checked={consent} onChange={(e) => setConsent(e.target.checked)} />
+              <span>{t("guest.consent")}</span>
+            </label>
+          </Section>
+
+          <Section id="sec-give" n={4} title={t("guest.sec_give")} done={needs.every((x) => !["type", "amount", "lifafa_photo", "gift_photo"].includes(x))} last>
+            <p className="mb-2 text-sm text-ink/70">{t("guest.purpose_q")}</p>
+            <div className="mb-5 flex flex-wrap gap-2">
+              {(["shagun", "kanyadaan", "aashirwad_gift"] as Purpose[]).map((p) => (
+                <Choice key={p} selected={purpose === p} onClick={() => setPurpose(p)}>{t(`guest.purposes.${p}`)}</Choice>
+              ))}
+            </div>
+
+            <p className="mb-2 text-sm text-ink/70">{t("guest.how_q")}</p>
+            <div className="space-y-3">
+              {(["online", "lifafa", "gift"] as ContributionType[]).map((ty) => {
+                const disabled = ty === "online" && !event.has_upi && !event.has_bank;
+                const on = types.has(ty);
+                return (
+                  <div key={ty} className={`rounded-2xl border-2 bg-white transition-colors ${on ? "border-kumkum" : "border-gulabi-200"} ${disabled ? "opacity-50" : ""}`}>
+                    <button type="button" disabled={disabled} onClick={() => toggleType(ty)} aria-pressed={on}
+                      className="flex w-full items-center gap-3 p-4 text-left focus-visible:outline focus-visible:outline-2 focus-visible:outline-kumkum rounded-2xl">
+                      <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-md border-2 text-sm font-bold ${on ? "border-kumkum bg-kumkum text-white" : "border-gulabi-200"}`}>{on ? "✓" : ""}</span>
+                      <span className="text-2xl" aria-hidden>{ty === "online" ? "📲" : ty === "lifafa" ? "✉️" : "🎁"}</span>
+                      <span>
+                        <span className="block text-lg font-semibold text-ink">{t(`guest.types.${ty}`)}</span>
+                        <span className="block text-sm text-ink/60">{t(`guest.types_desc.${ty}`)}</span>
+                      </span>
+                    </button>
+
+                    {on && ty === "online" && (
+                      <div className="space-y-2 border-t border-gulabi-100 px-4 pb-4 pt-3">
+                        <p className="text-sm font-semibold text-ink">{t("guest.online_amount")}</p>
+                        <div className="grid grid-cols-3 gap-2">
+                          {QUICK_AMOUNTS.map((a) => (
+                            <Choice key={a} selected={onlineAmount === a} onClick={() => setOnlineAmount(a)} className="!px-0 tabular-nums">₹{a.toLocaleString("en-IN")}</Choice>
+                          ))}
+                        </div>
+                        <TextInput inputMode="numeric" placeholder={t("guest.custom_amount")} value={onlineAmount} invalid={show("amount")}
+                          onChange={(e) => setOnlineAmount(e.target.value ? Number(e.target.value.replace(/\D/g, "").slice(0, 7)) : "")} />
+                      </div>
+                    )}
+                    {on && ty === "lifafa" && (
+                      <div className="space-y-3 border-t border-gulabi-100 px-4 pb-4 pt-3">
+                        <PhotoPicker label={t("guest.photo_of_lifafa")} file={lifafaPhoto} onChange={setLifafaPhoto} missing={show("lifafa_photo")} />
+                        <Label text={t("guest.amount_optional")}>
+                          <TextInput inputMode="numeric" value={lifafaAmount} placeholder="₹" onChange={(e) => setLifafaAmount(e.target.value.replace(/\D/g, "").slice(0, 7))} />
+                        </Label>
+                        <p className="-mt-2 text-xs text-ink/60">{t("guest.amount_optional_hint")}</p>
+                      </div>
+                    )}
+                    {on && ty === "gift" && (
+                      <div className="space-y-3 border-t border-gulabi-100 px-4 pb-4 pt-3">
+                        <PhotoPicker label={t("guest.photo_of_gift")} file={giftPhoto} onChange={setGiftPhoto} missing={show("gift_photo")} />
+                        <TextInput value={giftDesc} maxLength={120} placeholder={t("guest.gift_desc_ph")} onChange={(e) => setGiftDesc(e.target.value)} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            {show("type") && <Hint>{t("guest.need.type")}</Hint>}
+
+            <textarea value={message} maxLength={500} rows={2} onChange={(e) => setMessage(e.target.value)} placeholder={t("guest.message_ph")}
+              className="mt-4 w-full rounded-xl border-2 border-gulabi-200 bg-white p-3 text-base text-ink outline-none focus:border-kumkum" />
+          </Section>
+
+          {/* sticky submit: tells the guest exactly what is still missing */}
+          <div className="fixed inset-x-0 bottom-0 z-20 border-t border-gulabi-200 bg-gulabi-50/95 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 backdrop-blur">
+            <div className="mx-auto max-w-md">
+              {err ? <p role="alert" className="mb-2 text-center text-sm font-semibold text-kumkum">{err}</p> : (
+                <p className="mb-2 text-center text-sm text-ink/70">{needs.length ? t(`guest.need.${needs[0]}`) : t("guest.ready")}</p>
+              )}
+              <PrimaryButton disabled={busy} onClick={onSubmitClick}>{busy ? t("common.loading") : t("guest.submit_entry")}</PrimaryButton>
+            </div>
           </div>
-
-          <textarea value={message} maxLength={500} onChange={(e) => setMessage(e.target.value)} placeholder={t("guest.message_ph")}
-            className="w-full rounded-xl border border-gray-300 p-3" rows={2} />
-
-          <ErrorNote>{err}</ErrorNote>
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={() => setStep("details")}>{t("common.back")}</Button>
-            <Button className="flex-1" disabled={busy} onClick={() => submit()}>{busy ? t("common.loading") : t("guest.submit_entry")}</Button>
-          </div>
-        </Card>
-      )}
-
-      {step === "otp" && (
-        <Card className="space-y-4">
-          <h2 className="text-xl font-bold">{t("guest.otp_title")}</h2>
-          <p className="text-gray-700">{t(`guest.otp_reason.${otpReason ?? "always"}`)}</p>
+        </div>
+      ) : screen === "otp" ? (
+        <Panel>
+          <h2 className="font-display text-2xl text-kumkum">{t("guest.otp_title")}</h2>
+          <p className="text-ink/80">{t(`guest.otp_reason.${otpReason ?? "always"}`)}</p>
           {!otpSent ? (
-            <Button className="w-full" disabled={busy} onClick={sendOtp}>{t("guest.otp_send")}</Button>
+            <PrimaryButton disabled={busy} onClick={sendOtp}>{t("guest.otp_send")}</PrimaryButton>
           ) : (
             <>
-              <p className="text-sm text-gray-600">{t("guest.otp_sent", { mobile: maskMobile(mobile) })}</p>
-              <Input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otpCode}
-                onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))} placeholder={t("guest.otp_code")} />
-              <Button className="w-full" disabled={busy || otpCode.length !== 6} onClick={verifyOtp}>{t("guest.otp_verify")}</Button>
-              <Button variant="ghost" disabled={busy} onClick={sendOtp}>{t("guest.otp_send")}</Button>
+              <p className="text-sm text-ink/70">{t("guest.otp_sent", { mobile: maskMobile(mobile) })}</p>
+              <TextInput inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={otpCode}
+                className="text-center text-2xl tracking-[0.5em]" onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, ""))} placeholder="••••••" />
+              <PrimaryButton disabled={busy || otpCode.length !== 6} onClick={verifyOtp}>{t("guest.otp_verify")}</PrimaryButton>
+              <GhostButton disabled={busy} onClick={sendOtp}>{t("guest.otp_send")}</GhostButton>
             </>
           )}
-          <ErrorNote>{err}</ErrorNote>
-          <Button variant="ghost" onClick={() => setStep("give")}>{t("common.back")}</Button>
-        </Card>
-      )}
-
-      {step === "pay" && result?.payee && (
-        <PayStep
-          payee={result.payee}
-          amount={Number(onlineAmount)}
-          contribution={result.contributions.find((c) => c.type === "online")!}
-          secret={result.secret}
-          onDone={() => { setUtrDone(true); setStep("done"); }}
-        />
-      )}
-
-      {step === "done" && result && (
-        <Card className="space-y-4 text-center">
-          <p className="text-4xl">🙏</p>
-          <h2 className="font-display text-2xl text-maroon-800">{t("guest.thank_you")}</h2>
-          <p className="text-gray-700">{t("guest.thank_you_sub")}</p>
-          {utrDone && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{t("guest.pending_verify")}</p>}
+          {err && <p role="alert" className="text-sm font-semibold text-kumkum">{err}</p>}
+          <GhostButton onClick={() => setScreen("form")}>{t("common.back")}</GhostButton>
+        </Panel>
+      ) : screen === "pay" && result?.payee ? (
+        <PayStep payee={result.payee} amount={Number(onlineAmount)} contribution={result.contributions.find((c) => c.type === "online")!}
+          secret={result.secret} onDone={() => { setUtrDone(true); setScreen("done"); }} />
+      ) : result ? (
+        <Panel center>
+          <p className="font-display text-3xl text-kumkum">{t("guest.thank_you")}</p>
+          <p className="text-ink/80">{t("guest.thank_you_sub")}</p>
+          {utrDone && <p className="rounded-xl bg-marigold-soft p-3 text-sm text-ink">{t("guest.pending_verify")}</p>}
           {result.contributions.filter((c) => c.type !== "online").map((c) => (
-            <div key={c.id} className="rounded-xl border-2 border-dashed border-maroon-700 p-4">
-              <p className="text-sm text-gray-600">{t("guest.token_title")} · {t(`guest.types.${c.type}`)}</p>
-              <p className="font-mono text-4xl font-bold tracking-widest text-maroon-800">{c.token_no}</p>
-              <div className="mt-2 flex justify-center"><QRCodeSVG value={c.token_no} size={96} /></div>
-              <p className="mt-2 text-sm">{t("guest.token_counter_note")}</p>
+            <div key={c.id} className="rounded-2xl border-2 border-dashed border-kumkum bg-white p-5">
+              <p className="text-sm text-ink/70">{t("guest.token_title")} — {t(`guest.types.${c.type}`)}</p>
+              <p className="mt-1 text-5xl font-bold tracking-wider text-kumkum tabular-nums">{c.token_no}</p>
+              <div className="mt-3 flex justify-center"><QRCodeSVG value={c.token_no} size={104} fgColor="#2A1215" /></div>
+              <p className="mt-3 text-[15px] text-ink">{t("guest.token_counter_note")}</p>
             </div>
           ))}
-          {photoWarning && <ErrorNote>{t("errors.photo_failed")}</ErrorNote>}
-          <p className="text-xs text-gray-500">{t("guest.save_screenshot")}</p>
-          {assisted && <Button className="w-full" onClick={resetForNext}>{t("counter.assisted_entry")}</Button>}
-        </Card>
-      )}
-    </Shell>
+          {photoWarning && <p className="text-sm font-semibold text-kumkum">{t("errors.photo_failed")}</p>}
+          <p className="text-xs text-ink/60">{t("guest.save_screenshot")}</p>
+          {assisted && <PrimaryButton onClick={resetForNext}>{t("counter.assisted_entry")}</PrimaryButton>}
+        </Panel>
+      ) : null}
+    </Page>
   );
 }
 
-function Shell({ children, event }: { children: React.ReactNode; event?: PublicEvent }) {
+/* ---------- layout pieces ---------- */
+
+function Page({ children }: { children: ReactNode }) {
+  const { i18n } = useTranslation();
+  const next = i18n.language === "hi" ? "en" : "hi";
   return (
-    <div className="min-h-screen bg-gradient-to-b from-maroon-50 to-gold-100/40">
-      <header className="flex items-center justify-between px-4 py-3">
-        <span className="font-display text-lg text-maroon-800">{event ? `${event.bride_name} ♥ ${event.groom_name}` : "Shagun"}</span>
-        <LanguageToggle />
-      </header>
-      <main className="mx-auto max-w-md space-y-4 px-4 pb-10">{children}</main>
+    <div className="min-h-screen bg-gulabi-100 text-ink">
+      <div className="mx-auto flex max-w-md justify-end px-4 pt-3">
+        <button onClick={() => i18n.changeLanguage(next)}
+          className="rounded-full border-2 border-kumkum/30 bg-white/80 px-4 py-1.5 text-sm font-semibold text-kumkum focus-visible:outline focus-visible:outline-2 focus-visible:outline-kumkum">
+          {i18n.language === "hi" ? "English" : "हिंदी"}
+        </button>
+      </div>
+      {children}
     </div>
   );
 }
 
-function PhotoPicker({ label, file, onChange }: { label: string; file: File | null; onChange: (f: File | null) => void }) {
+/** The arched jharokha window framing the couple — the page's single bold element. */
+function Jharokha({ names, sub, welcome, verified }: { names: string; sub: string; welcome?: string; verified: string }) {
+  return (
+    <header className="mx-auto mt-2 max-w-md px-6">
+      <div className="relative rounded-t-[10rem] rounded-b-2xl border-[3px] border-marigold bg-gulabi-50 p-2 shadow-[0_10px_30px_-18px_rgba(140,28,43,0.6)]">
+        <div className="rounded-t-[9.5rem] rounded-b-xl border border-kumkum/25 px-6 pb-6 pt-14 text-center">
+          <span aria-hidden className="absolute left-1/2 top-3 h-3 w-3 -translate-x-1/2 rotate-45 bg-marigold" />
+          <h1 className="font-display text-[2.1rem] leading-tight text-kumkum">{names}</h1>
+          <p className="mt-2 text-[15px] text-ink/70">{sub}</p>
+          {welcome && <p className="mx-auto mt-4 max-w-[30ch] text-base leading-relaxed text-ink">{welcome}</p>}
+          <p className="mt-4 inline-flex items-center gap-1.5 rounded-full bg-mehndi-soft px-3 py-1 text-xs font-semibold text-mehndi">
+            <span aria-hidden>✓</span> {verified}
+          </p>
+        </div>
+      </div>
+    </header>
+  );
+}
+
+/** One numbered step; the marigold thread links the four steps like a toran. */
+function Section({ id, n, title, done, last, children }: { id: string; n: number; title: string; done: boolean; last?: boolean; children: ReactNode }) {
+  return (
+    <section id={id} className="relative scroll-mt-6 pl-12">
+      {!last && <span aria-hidden className="absolute bottom-0 left-[17px] top-10 w-[2px] bg-marigold/60" />}
+      <span aria-hidden className={`absolute left-0 top-0 flex h-9 w-9 items-center justify-center rounded-full text-base font-bold ${done ? "bg-mehndi text-white" : "border-2 border-marigold bg-gulabi-50 text-kumkum"}`}>
+        {done ? "✓" : n}
+      </span>
+      <h2 className="pt-1 text-xl font-bold text-ink">{title}</h2>
+      <div className="space-y-3 pb-9 pt-3">{children}</div>
+    </section>
+  );
+}
+
+function Panel({ children, center }: { children: ReactNode; center?: boolean }) {
+  return <div className={`mx-auto mt-6 max-w-md space-y-4 px-6 pb-12 ${center ? "text-center" : ""}`}>{children}</div>;
+}
+
+function Notice({ children }: { children: ReactNode }) {
+  return <p className="mx-auto mt-10 max-w-md px-6 text-center text-lg text-ink">{children}</p>;
+}
+
+function Choice({ selected, big, className = "", ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { selected: boolean; big?: boolean }) {
+  return (
+    <button type="button" aria-pressed={selected}
+      className={`rounded-xl border-2 px-4 font-semibold transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-kumkum ${big ? "min-h-[64px] text-lg" : "min-h-[46px] text-base"} ${selected ? "border-kumkum bg-kumkum text-white" : "border-gulabi-200 bg-white text-ink"} ${className}`}
+      {...rest} />
+  );
+}
+
+function PrimaryButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button type="button" {...props}
+      className="min-h-[56px] w-full rounded-2xl bg-kumkum text-lg font-bold text-white shadow-[0_6px_0_0_#6E1220] transition active:translate-y-[3px] active:shadow-[0_3px_0_0_#6E1220] disabled:bg-gray-400 disabled:shadow-none focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-marigold" />
+  );
+}
+
+function GhostButton(props: ButtonHTMLAttributes<HTMLButtonElement>) {
+  return <button type="button" {...props} className="min-h-[48px] w-full rounded-xl font-semibold text-kumkum disabled:opacity-50" />;
+}
+
+function Label({ text, optional, children }: { text: string; optional?: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="mb-1 block text-sm font-semibold text-ink">
+        {text} {optional && <span className="font-normal text-ink/50">({optional})</span>}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+function TextInput({ invalid, className = "", ...props }: React.InputHTMLAttributes<HTMLInputElement> & { invalid?: boolean }) {
+  return (
+    <input {...props}
+      className={`min-h-[52px] w-full rounded-xl border-2 bg-white px-4 text-lg text-ink outline-none placeholder:text-ink/35 ${invalid ? "border-kumkum" : "border-gulabi-200 focus:border-kumkum"} ${className}`} />
+  );
+}
+
+function Hint({ children }: { children: ReactNode }) {
+  return <p role="alert" className="text-sm font-semibold text-kumkum">{children}</p>;
+}
+
+function PhotoPicker({ label, file, onChange, missing }: { label: string; file: File | null; onChange: (f: File | null) => void; missing?: boolean }) {
   const { t } = useTranslation();
   const preview = useMemo(() => (file ? URL.createObjectURL(file) : null), [file]);
   useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
   return (
-    <div className="space-y-2">
-      <p className="text-sm font-semibold">{label} *</p>
-      {preview && <img src={preview} alt="" className="h-40 w-full rounded-lg object-cover" />}
-      <label className="flex min-h-[48px] cursor-pointer items-center justify-center rounded-xl border-2 border-dashed border-maroon-700 bg-white font-semibold text-maroon-800">
-        📷 {file ? t("guest.retake") : t("guest.take_photo")}
-        {/* capture=environment opens the camera directly on phones */}
-        <input type="file" accept="image/*" capture="environment" className="hidden"
-          onChange={(e) => onChange(e.target.files?.[0] ?? null)} />
+    <div>
+      <p className="mb-1 text-sm font-semibold text-ink">{label} *</p>
+      <label className={`flex cursor-pointer items-center gap-3 rounded-xl border-2 border-dashed p-2 ${missing ? "border-kumkum bg-kumkum-soft" : "border-marigold bg-marigold-soft/40"}`}>
+        {preview ? (
+          <img src={preview} alt="" className="h-20 w-20 rounded-lg object-cover" />
+        ) : (
+          <span aria-hidden className="flex h-20 w-20 items-center justify-center rounded-lg bg-white text-3xl">📷</span>
+        )}
+        <span className="text-base font-semibold text-kumkum">{file ? t("guest.retake") : t("guest.take_photo")}</span>
+        <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={(e) => onChange(e.target.files?.[0] ?? null)} />
       </label>
     </div>
   );
 }
 
-function PayStep({
-  payee, amount, contribution, secret, onDone,
-}: {
-  payee: Payee;
-  amount: number;
-  contribution: { id: string; token_no: string };
-  secret: string;
-  onDone: () => void;
+function PayStep({ payee, amount, contribution, secret, onDone }: {
+  payee: Payee; amount: number; contribution: { id: string; token_no: string }; secret: string; onDone: () => void;
 }) {
   const { t } = useTranslation();
   const [method, setMethod] = useState<"direct_upi" | "bank_transfer">(payee.upi_id ? "direct_upi" : "bank_transfer");
@@ -523,7 +566,7 @@ function PayStep({
         try {
           await uploadToSigned(r.upload.path, r.upload.token, await compressPhoto(shot));
         } catch {
-          /* screenshot is optional */
+          /* optional */
         }
       }
       onDone();
@@ -535,74 +578,68 @@ function PayStep({
   }
 
   return (
-    <Card className="space-y-4">
-      <h2 className="text-xl font-bold">{t("guest.pay_title")} · ₹{amount.toLocaleString("en-IN")}</h2>
-      <p className="rounded-lg bg-amber-50 p-3 text-sm font-semibold text-amber-900">
-        ⚠ {t("guest.pay_check_name", { name: payee.payee_name })}
+    <Panel>
+      <h2 className="font-display text-2xl text-kumkum">{t("guest.pay_title")} — ₹{amount.toLocaleString("en-IN")}</h2>
+      <p className="rounded-xl border-l-4 border-marigold bg-white p-3 text-[15px] font-semibold text-ink">
+        {t("guest.pay_check_name", { name: payee.payee_name })}
       </p>
 
       {link && payee.upi_id && (
         <div className="space-y-3">
-          <a href={link} className="flex min-h-[52px] items-center justify-center rounded-xl bg-maroon-700 text-lg font-bold text-white">
+          <a href={link} className="flex min-h-[56px] items-center justify-center rounded-2xl bg-kumkum text-lg font-bold text-white shadow-[0_6px_0_0_#6E1220]">
             {t("guest.pay_with_app")}
           </a>
           <div className="text-center">
-            <p className="mb-2 text-sm text-gray-600">{t("guest.scan_qr")}</p>
-            <div className="inline-block rounded-xl bg-white p-3 ring-1 ring-black/10"><QRCodeSVG value={link} size={180} /></div>
+            <p className="mb-2 text-sm text-ink/70">{t("guest.scan_qr")}</p>
+            <div className="inline-block rounded-2xl border-2 border-marigold bg-white p-3"><QRCodeSVG value={link} size={180} fgColor="#2A1215" /></div>
           </div>
           <CopyRow label={t("guest.upi_id")} value={payee.upi_id} copied={copied === "upi"} onCopy={() => copy("upi", payee.upi_id!)} />
         </div>
       )}
 
       {payee.bank_account && (
-        <details className="rounded-xl border border-gray-200 p-3" open={!link}>
-          <summary className="cursor-pointer font-semibold">{t("guest.bank_details")}</summary>
+        <details className="rounded-xl border-2 border-gulabi-200 bg-white p-3" open={!link}>
+          <summary className="cursor-pointer font-semibold text-ink">{t("guest.bank_details")}</summary>
           <div className="mt-2 space-y-2">
             <CopyRow label={t("guest.account_no")} value={payee.bank_account} copied={copied === "acc"} onCopy={() => copy("acc", payee.bank_account!)} />
             {payee.ifsc && <CopyRow label={t("guest.ifsc")} value={payee.ifsc} copied={copied === "ifsc"} onCopy={() => copy("ifsc", payee.ifsc!)} />}
-            {payee.bank_name && <p className="text-sm text-gray-600">{t("guest.bank")}: {payee.bank_name}</p>}
+            {payee.bank_name && <p className="text-sm text-ink/70">{t("guest.bank")}: {payee.bank_name}</p>}
           </div>
         </details>
       )}
 
-      <hr />
-      <h3 className="font-bold">{t("guest.after_pay")}</h3>
-      <div className="flex gap-2">
-        {payee.upi_id && (
-          <button onClick={() => setMethod("direct_upi")} className={`flex-1 rounded-lg border-2 py-2 text-sm font-semibold ${method === "direct_upi" ? "border-maroon-700 bg-maroon-50" : "border-gray-200"}`}>
-            {t("guest.method_upi")}
-          </button>
-        )}
-        {payee.bank_account && (
-          <button onClick={() => setMethod("bank_transfer")} className={`flex-1 rounded-lg border-2 py-2 text-sm font-semibold ${method === "bank_transfer" ? "border-maroon-700 bg-maroon-50" : "border-gray-200"}`}>
-            {t("guest.method_bank")}
-          </button>
-        )}
+      <h3 className="pt-2 text-lg font-bold text-ink">{t("guest.after_pay")}</h3>
+      <div className="grid grid-cols-2 gap-2">
+        {payee.upi_id && <Choice selected={method === "direct_upi"} onClick={() => setMethod("direct_upi")}>{t("guest.method_upi")}</Choice>}
+        {payee.bank_account && <Choice selected={method === "bank_transfer"} onClick={() => setMethod("bank_transfer")}>{t("guest.method_bank")}</Choice>}
       </div>
-      <Field label={t("guest.paid_amount")}>
-        <Input inputMode="numeric" value={paid} onChange={(e) => setPaid(e.target.value.replace(/\D/g, "").slice(0, 7))} />
-      </Field>
-      <Field label={t("guest.utr_label")} hint={method === "direct_upi" ? t("guest.utr_help_upi") : t("guest.utr_help_bank")}>
-        <Input value={utr} maxLength={22} inputMode={method === "direct_upi" ? "numeric" : "text"} onChange={(e) => setUtr(e.target.value.trim())} />
-      </Field>
-      <Field label={t("guest.screenshot_optional")}>
-        <input type="file" accept="image/*" onChange={(e) => setShot(e.target.files?.[0] ?? null)} />
-      </Field>
-      <ErrorNote>{err}</ErrorNote>
-      <Button className="w-full" disabled={busy} onClick={confirm}>{busy ? t("common.loading") : t("guest.submit_utr")}</Button>
-    </Card>
+      <Label text={t("guest.paid_amount")}>
+        <TextInput inputMode="numeric" value={paid} onChange={(e) => setPaid(e.target.value.replace(/\D/g, "").slice(0, 7))} />
+      </Label>
+      <Label text={t("guest.utr_label")}>
+        <TextInput value={utr} maxLength={22} inputMode={method === "direct_upi" ? "numeric" : "text"} onChange={(e) => setUtr(e.target.value.trim())} />
+      </Label>
+      <p className="-mt-2 text-xs text-ink/60">{method === "direct_upi" ? t("guest.utr_help_upi") : t("guest.utr_help_bank")}</p>
+      <Label text={t("guest.screenshot_optional")}>
+        <input type="file" accept="image/*" className="block w-full text-sm" onChange={(e) => setShot(e.target.files?.[0] ?? null)} />
+      </Label>
+      {err && <p role="alert" className="text-sm font-semibold text-kumkum">{err}</p>}
+      <PrimaryButton disabled={busy} onClick={confirm}>{busy ? t("common.loading") : t("guest.submit_utr")}</PrimaryButton>
+    </Panel>
   );
 }
 
 function CopyRow({ label, value, copied, onCopy }: { label: string; value: string; copied: boolean; onCopy: () => void }) {
   const { t } = useTranslation();
   return (
-    <div className="flex items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2">
-      <div>
-        <p className="text-xs text-gray-500">{label}</p>
-        <p className="font-mono font-semibold">{value}</p>
+    <div className="flex items-center justify-between gap-2 rounded-xl bg-white px-3 py-2 ring-1 ring-gulabi-200">
+      <div className="min-w-0">
+        <p className="text-xs text-ink/60">{label}</p>
+        <p className="truncate text-base font-semibold tracking-wide text-ink">{value}</p>
       </div>
-      <button onClick={onCopy} className="rounded-lg border px-3 py-1 text-sm font-semibold">{copied ? t("common.copied") : t("common.copy")}</button>
+      <button type="button" onClick={onCopy} className="shrink-0 rounded-lg border-2 border-kumkum/30 px-3 py-1 text-sm font-semibold text-kumkum">
+        {copied ? t("common.copied") : t("common.copy")}
+      </button>
     </div>
   );
 }

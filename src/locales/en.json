@@ -119,7 +119,25 @@
     "thank_you_sub": "Your entry has reached the family.",
     "pending_verify": "Payment details received. The family will verify it with their bank.",
     "save_screenshot": "Take a screenshot of this page for your record.",
-    "assisted_banner": "Assisted entry by counter staff"
+    "assisted_banner": "Assisted entry by counter staff",
+    "need": {
+      "side": "Choose which side you are from",
+      "relation": "Choose your relation",
+      "relation_other": "Type your relation",
+      "name": "Enter your name",
+      "mobile": "Enter a 10-digit mobile number",
+      "consent": "Tick the consent box",
+      "type": "Choose how you are giving",
+      "lifafa_photo": "Take a photo of the envelope",
+      "gift_photo": "Take a photo of the gift",
+      "amount": "Choose the shagun amount"
+    },
+    "ready": "All set — submit your entry",
+    "sec_side": "Which side are you from?",
+    "sec_relation": "Your relation",
+    "sec_details": "Your details",
+    "sec_give": "What are you giving?",
+    "date_venue": "{{date}}, {{venue}}"
   },
   "errors": {
     "invalid_name": "Please enter a valid name.",
