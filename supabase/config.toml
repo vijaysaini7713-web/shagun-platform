@@ -1,0 +1,33 @@
+project_id = "shagun-platform"
+
+[auth]
+site_url = "http://localhost:5173"
+additional_redirect_urls = ["http://localhost:5173/login"]
+# Only invited users can log in (no public sign-up)
+enable_signup = false
+
+[auth.email]
+enable_signup = false
+otp_length = 6
+otp_expiry = 600
+
+[auth.mfa]
+max_enrolled_factors = 4
+
+[auth.mfa.totp]
+enroll_enabled = true
+verify_enabled = true
+
+# Guest functions are called without a user login, so JWT verification is off there.
+# They validate input, rate limit and only touch data through service-role DB functions.
+[functions.guest-submit]
+verify_jwt = false
+
+[functions.guest-otp]
+verify_jwt = false
+
+[functions.guest-utr]
+verify_jwt = false
+
+[functions.invite-member]
+verify_jwt = true
