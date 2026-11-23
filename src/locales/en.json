@@ -164,7 +164,12 @@
     "mfa_title": "Two-step verification",
     "mfa_enroll": "Scan this QR in Google Authenticator / Authy, then enter the 6-digit code.",
     "mfa_verify": "Enter the 6-digit code from your authenticator app.",
-    "mfa_required": "Family admins must use two-step verification."
+    "mfa_required": "Family admins must use two-step verification.",
+    "link_sent": "We emailed a login link to {{email}}. Open it on this same phone/browser.",
+    "or_code": "If the email shows a 6-digit code, enter it here:",
+    "rate_limited": "Too many login emails were requested. Please wait about 1 hour and try once.",
+    "wait_seconds": "You can request again in {{s}} seconds",
+    "link_expired": "This login link is used or expired. Request a new one (once)."
   },
   "app": {
     "my_weddings": "My weddings",

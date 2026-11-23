@@ -5,6 +5,8 @@ import { supabase } from "../../lib/supabase";
 import { useAuth } from "../../lib/auth";
 import { Button, Card, ErrorNote, Field, Input, LanguageToggle } from "../../components/ui";
 
+const COOLDOWN = 60;
+
 export default function Login() {
   const { t } = useTranslation();
   const auth = useAuth();
@@ -15,12 +17,26 @@ export default function Login() {
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const [wait, setWait] = useState(0);
 
   useEffect(() => {
     if (auth.session) nav(loc.state?.from ?? "/app", { replace: true });
   }, [auth.session, nav, loc.state]);
 
+  // A used/expired magic link comes back as #error=...&error_code=otp_expired
+  useEffect(() => {
+    const hash = new URLSearchParams(window.location.hash.slice(1));
+    if (hash.get("error_code") === "otp_expired" || hash.get("error")) setErr(t("auth.link_expired"));
+  }, [t]);
+
+  useEffect(() => {
+    if (wait <= 0) return;
+    const h = setTimeout(() => setWait((w) => w - 1), 1000);
+    return () => clearTimeout(h);
+  }, [wait]);
+
   async function send() {
+    if (busy || wait > 0) return;
     setErr(null);
     setBusy(true);
     const { error } = await supabase.auth.signInWithOtp({
@@ -28,8 +44,14 @@ export default function Login() {
       options: { shouldCreateUser: false, emailRedirectTo: `${window.location.origin}/login` },
     });
     setBusy(false);
-    if (error) setErr(t("auth.invite_only"));
-    else setSent(true);
+    if (error) {
+      const rate = error.status === 429 || /rate limit|security purposes/i.test(error.message);
+      setErr(rate ? t("auth.rate_limited") : t("auth.invite_only"));
+      if (rate) setWait(COOLDOWN);
+      return;
+    }
+    setSent(true);
+    setWait(COOLDOWN);
   }
 
   async function verify() {
@@ -47,20 +69,22 @@ export default function Login() {
           <h1 className="text-xl font-bold">{t("auth.title")}</h1>
           <LanguageToggle />
         </div>
+        <Field label={t("auth.email")}>
+          <Input type="email" autoComplete="email" value={email} disabled={sent} onChange={(e) => setEmail(e.target.value)} />
+        </Field>
         {!sent ? (
-          <>
-            <Field label={t("auth.email")}>
-              <Input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} />
-            </Field>
-            <Button className="w-full" disabled={busy || !email.includes("@")} onClick={send}>{t("auth.send_code")}</Button>
-          </>
+          <Button className="w-full" disabled={busy || wait > 0 || !email.includes("@")} onClick={send}>
+            {wait > 0 ? t("auth.wait_seconds", { s: wait }) : t("auth.send_code")}
+          </Button>
         ) : (
           <>
-            <p className="text-sm text-gray-600">{t("auth.code_sent", { email })}</p>
-            <Field label={t("auth.code")}>
-              <Input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} />
-            </Field>
+            <p className="rounded-lg bg-green-50 p-3 text-sm text-green-900">{t("auth.link_sent", { email })}</p>
+            <p className="text-sm text-gray-600">{t("auth.or_code")}</p>
+            <Input inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} />
             <Button className="w-full" disabled={busy || code.length !== 6} onClick={verify}>{t("auth.verify")}</Button>
+            <Button variant="ghost" className="w-full" disabled={wait > 0} onClick={() => setSent(false)}>
+              {wait > 0 ? t("auth.wait_seconds", { s: wait }) : t("auth.send_code")}
+            </Button>
           </>
         )}
         <ErrorNote>{err}</ErrorNote>
